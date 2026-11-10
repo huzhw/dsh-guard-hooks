@@ -159,6 +159,20 @@ await check("PostToolUse stdout additionalContext reaches the model", async () =
 	assert.ok(texts.some((t) => t.includes("tool-done")));
 });
 
+await check("PostToolUse context uses the producer-owned source on v4 sessions", async () => {
+	const call = exec({ callId: "cP4", name: "WebSearch", arguments: { query: "x" } });
+	call.agent = { session: { header: { version: 4 } } };
+	const out = await ctx.waterfall(
+		"tools/post-execute",
+		call,
+		{ content: [{ type: "text", text: "r" }] },
+		(result) => Promise.resolve({ kind: "accept", content: result.content })
+	);
+	const hit = (out.additionalContexts ?? []).find((m) => JSON.stringify(m).includes("tool-done"));
+	assert.ok(hit, "PostToolUse context missing");
+	assert.equal(hit.source.kind, "plugin:dsh-guard-hooks");
+});
+
 await check("UserPromptSubmit hook can inject context", async () => {
 	const batch = [{ id: "m1", role: "user", content: [{ type: "text", text: "hello" }] }];
 	const decision = await ctx.waterfall("agent/pre-step", { messages: batch }, () =>
@@ -168,6 +182,33 @@ await check("UserPromptSubmit hook can inject context", async () => {
 	const injected = decision.messages.filter((m) => JSON.stringify(m).includes("remember-X"));
 	assert.equal(injected.length, 1);
 	assert.equal(injected[0].source.kind, "plugin");
+});
+
+await check("UserPromptSubmit injection uses the producer-owned source on v4 sessions", async () => {
+	const batch = [{ id: "m4", role: "user", content: [{ type: "text", text: "hello" }] }];
+	const decision = await ctx.waterfall(
+		"agent/pre-step",
+		{ messages: batch, agent: { session: { header: { version: 4 } } } },
+		() => Promise.resolve({ kind: "enter", messages: batch })
+	);
+	const injected = decision.messages.filter((m) => JSON.stringify(m).includes("remember-X"));
+	assert.equal(injected.length, 1);
+	assert.equal(injected[0].source.kind, "plugin:dsh-guard-hooks");
+	assert.equal(injected[0].source.form, "notice");
+	assert.equal(injected[0].source.plugin, undefined);
+});
+
+await check("UserPromptSubmit injection keeps the v3 wrapper on v3 sessions", async () => {
+	const batch = [{ id: "m5", role: "user", content: [{ type: "text", text: "hello" }] }];
+	const decision = await ctx.waterfall(
+		"agent/pre-step",
+		{ messages: batch, agent: { session: { header: { version: 3 } } } },
+		() => Promise.resolve({ kind: "enter", messages: batch })
+	);
+	const injected = decision.messages.filter((m) => JSON.stringify(m).includes("remember-X"));
+	assert.equal(injected.length, 1);
+	assert.equal(injected[0].source.kind, "plugin");
+	assert.equal(injected[0].source.plugin, "dsh-guard-hooks");
 });
 
 await check("UserPromptSubmit hook can reject the prompt", async () => {
