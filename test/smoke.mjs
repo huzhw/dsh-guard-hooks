@@ -10,7 +10,7 @@ import path from "node:path";
 import { createHmac } from "node:crypto";
 import { loadConfig } from "../lib/config.js";
 import { compilePattern, compileToolMatcher, matchGlobList } from "../lib/patterns.js";
-import { runHook } from "../lib/engine.js";
+import { runHook, runEventHooks } from "../lib/engine.js";
 import { evaluateRules } from "../lib/features/rules.js";
 import { extractPaths, interpolateFilePath } from "../lib/features/format.js";
 import { redact } from "../lib/audit.js";
@@ -173,6 +173,33 @@ await check("stdin payload arrives as JSON", async () => {
 	assert.equal(res.ok, true);
 });
 
+await check("runEventHooks forwards payloadExtra fields to hook stdin", async () => {
+	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dshh-payload-"));
+	const dumper = path.join(tmp, "dump.mjs");
+	const outFile = path.join(tmp, "payload.json");
+	fs.writeFileSync(dumper, [
+		'import fs from "node:fs";',
+		'fs.writeFileSync(process.argv[2], fs.readFileSync(0, "utf8"));'
+	].join("\n"));
+	const command = `"${process.execPath}" "${dumper}" "${outFile}"`;
+	const results = await runEventHooks(
+		[{ command, matcher: ".*", timeoutMs: 15000, async: false }],
+		{
+			event: "PreToolUse",
+			sessionId: "payload-test",
+			cwd: tmp,
+			toolName: "write",
+			payloadExtra: { tool: "write", input: { file_path: "a.mjs", content: "const a = 1;" } }
+		}
+	);
+	assert.equal(results[0].ok, true);
+	const payload = JSON.parse(fs.readFileSync(outFile, "utf8"));
+	assert.equal(payload.event, "PreToolUse");
+	assert.equal(payload.sessionId, "payload-test");
+	assert.equal(payload.tool, "write");
+	assert.equal(payload.input.file_path, "a.mjs");
+	fs.rmSync(tmp, { recursive: true, force: true });
+});
 await check("stdout JSON decision overrides exit code", async () => {
 	const block = await runHook({
 		command: 'node -e "console.log(JSON.stringify({decision:\'block\',reason:\'危险\'}))"',
